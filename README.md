@@ -74,6 +74,12 @@ You can do these live checks yourself; your friend does not need to join yet.
 Automated tests cover both routes using fictional IDs and mocked Discord requests.
 Running the tests sends no messages or registration requests to Discord.
 
+Worker tests validate every outbound request with the real Workers `Request`
+constructor before mocking network I/O. Worker Discord calls use `redirect:
+'manual'`: Workers rejects `redirect: 'error'`, and unexpected redirects are
+handled as failures without forwarding credentials to another URL. The Node.js
+registration scripts retain their supported `redirect: 'error'` setting.
+
 ## `/apply` retries and failures
 
 The form is bound to the invoking member. Every signed submission rechecks server,
