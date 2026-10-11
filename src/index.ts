@@ -1,6 +1,8 @@
 import { resolveUserForum } from './authorization';
 import { applyModal, isDiscordId, isRecord, parseApplication } from './apply-form';
 import { completeApplication } from './applications';
+import { autocompleteApplications, emptyAutocomplete, parseStatusOptions } from './status-form';
+import { completeStatus } from './status';
 
 function privateReply(content: string): Response {
 	return Response.json({ type: 4, data: { content, flags: 64 } });
@@ -75,6 +77,23 @@ export default {
 			return Response.json({ type: 1 });
 		}
 		const data = 'data' in interaction ? interaction.data : null;
+		if (interaction.type === 2 && isRecord(data) && data.type === 1 && data.name === 'status') {
+			const user = resolveUserForum(interaction,env);
+			if (!user) return privateReply('You do not have access to this tracker in this server.');
+			const input = parseStatusOptions(data);
+			if (!input || !('application_id' in interaction) || interaction.application_id !== env.DISCORD_APPLICATION_ID ||
+				!('id' in interaction) || !isDiscordId(interaction.id) || !('token' in interaction) ||
+				typeof interaction.token !== 'string' || !interaction.token || interaction.token.length > 512)
+				return privateReply('Invalid status request. Select your application and one of the seven statuses.');
+			ctx.waitUntil(completeStatus(input,user,interaction.id,interaction.token,env));
+			return Response.json({type:5,data:{flags:64}});
+		}
+		if (interaction.type === 4 && isRecord(data) && data.type === 1 && data.name === 'status') {
+			const user = resolveUserForum(interaction, env);
+			if (!user || !('application_id' in interaction) || interaction.application_id !== env.DISCORD_APPLICATION_ID ||
+				!('id' in interaction) || !isDiscordId(interaction.id)) return emptyAutocomplete();
+			return autocompleteApplications(data, user, env);
+		}
 		const isApplyCommand = interaction.type === 2 && isRecord(data) && data.type === 1 && data.name === 'apply';
 		const isApplySubmit = interaction.type === 5 && isRecord(data) && typeof data.custom_id === 'string' && data.custom_id.startsWith('apply:');
 		if (isApplyCommand || isApplySubmit) {
@@ -127,7 +146,6 @@ export default {
 			}
 		}
 
-		// /status comes in M6.
 		return new Response('Unsupported interaction type', { status: 400 });
 	},
 } satisfies ExportedHandler<Env>;

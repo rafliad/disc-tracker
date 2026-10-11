@@ -6,7 +6,7 @@ function fail(message) {
 	process.exitCode = 1;
 }
 
-export async function registerCommand(name, description) {
+export async function registerCommand(name, description, options = []) {
 	try {
 		const [guildId, ...extraArgs] = process.argv.slice(2);
 		const isDiscordId = (value) => typeof value === 'string' && /^[1-9]\d{16,19}$/.test(value);
@@ -24,7 +24,7 @@ export async function registerCommand(name, description) {
 		try {
 			response = await fetch(`https://discord.com/api/v10/applications/${applicationId}/guilds/${guildId}/commands`, {
 				method: 'POST', headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
-				body: JSON.stringify({ type: 1, name, description }),
+				body: JSON.stringify({ type: 1, name, description, ...(options.length ? { options } : {}) }),
 				redirect: 'error', signal: AbortSignal.timeout(10000),
 			});
 		} catch {

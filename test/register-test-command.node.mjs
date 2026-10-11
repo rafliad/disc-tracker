@@ -9,6 +9,11 @@ import { test as nodeTest } from 'node:test';
 const commandDefinitions = [
 	{ name: 'test', description: 'Check that Job Tracker is connected.' },
 	{ name: 'apply', description: 'Track a new job application in your Forum.' },
+	{ name: 'status', description: 'Update one of your job applications.', options: [
+		{ type: 3, name: 'application', description: 'Your job application', required: true, autocomplete: true },
+		{ type: 3, name: 'status', description: 'New application status', required: true,
+			choices: ['Applied','Screening','Assessment','Interview','Offer','Rejected','Withdrawn'].map(name=>({name,value:name})) },
+	] },
 ];
 for (const definition of commandDefinitions) {
 	const test = (name, fn) => nodeTest(`${definition.name}: ${name}`, fn);
@@ -54,7 +59,8 @@ for (const definition of commandDefinitions) {
 		assert.equal(result.request.url, `https://discord.com/api/v10/applications/${applicationId}/guilds/${guildId}/commands`);
 		assert.equal(result.request.method, 'POST');
 		assert.equal(result.request.headers.authorization, `Bot ${fixtureToken}`);
-		assert.deepEqual(result.request.body, { type: 1, name: definition.name, description: definition.description });
+		assert.deepEqual(result.request.body, { type: 1, name: definition.name, description: definition.description,
+			...(definition.options ? { options: definition.options } : {}) });
 		assert.match(result.stdout, new RegExp(`Registered /${definition.name}`));
 		assert.ok(!`${result.stdout}${result.stderr}`.includes(fixtureToken));
 	});

@@ -58,6 +58,21 @@ describe('application migration', () => {
 		expect(await env.disc_tracker_db.prepare('SELECT id FROM applications').first('id')).toBe('existing');
 	});
 
+	it('preserves a populated 0001 database when adding status-change tracking', async () => {
+		const db = env.disc_tracker_db;
+		// Rebuild only this isolated test's database at the pre-upgrade schema.
+		await db.batch([db.prepare('DROP TABLE status_changes'), db.prepare('DROP TABLE applications')]);
+		const migrations = inject('migrations');
+		await applyD1Migrations(db, migrations.slice(0,1), 'upgrade_test_migrations');
+		await insert('existing', undefined, '666666666666666666').run();
+		await db.prepare(`UPDATE applications SET status = 'Offer', job_url = 'https://example.com/job',
+			source = 'Referral', notes = 'Keep this note' WHERE id = 'existing'`).run();
+		const before = await db.prepare('SELECT * FROM applications').first();
+		await applyD1Migrations(db, migrations, 'upgrade_test_migrations');
+		expect(await db.prepare('SELECT * FROM applications').first()).toEqual({...before, status_change_id:null});
+		expect(await db.prepare('SELECT COUNT(*) AS count FROM status_changes').first('count')).toBe(0);
+	});
+
 	it('indexes owner and update time for owner-scoped queries', async () => {
 		const { results } = await env.disc_tracker_db.prepare("PRAGMA index_info('applications_owner_updated_idx')").all();
 		expect(results.map((column) => column.name)).toEqual(['owner_discord_id', 'updated_at']);
