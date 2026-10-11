@@ -101,6 +101,7 @@ export async function saveApplication(input: ApplicationInput, user: UserForum, 
 
 /** Complete the deferred ephemeral response without storing or logging its token. */
 export async function completeApplication(input: ApplicationInput, user: UserForum, interactionToken: string, env: Env): Promise<void> {
+	const failureMessage = 'apply: private reply delivery failed; check the Forum and database before resubmitting.';
 	let content: string;
 	try {
 		content = await saveApplication(input, user, env);
@@ -111,9 +112,20 @@ export async function completeApplication(input: ApplicationInput, user: UserFor
 		const response = await discordRequest(`/webhooks/${env.DISCORD_APPLICATION_ID}/${encodeURIComponent(interactionToken)}/messages/@original`, null, 'PATCH', {
 			content, allowed_mentions: noMentions,
 		});
-		if (!response.ok) throw new Error('Reply delivery failed');
-	} catch {
-		// Never log request URLs, API bodies, tokens, or user-provided fields.
-		console.error('apply: private reply delivery failed; check the Forum and database before resubmitting.');
+		if (!response.ok) {
+			let discordCode: number | null = null;
+			try {
+				const body: unknown = await response.json();
+				if (isRecord(body) && typeof body.code === 'number' && Number.isSafeInteger(body.code) && body.code >= 0) discordCode = body.code;
+			} catch {
+				// Proxies may return HTML; preserve the HTTP status without logging the body.
+			}
+			console.error(failureMessage, { operation: 'reply_edit', failure: 'http', http_status: response.status, discord_code: discordCode });
+		}
+	} catch (error) {
+		// Only fixed categories: exception messages/URLs can contain interaction tokens.
+		const failure = isRecord(error) && error.name === 'TimeoutError' ? 'timeout'
+			: isRecord(error) && error.name === 'AbortError' ? 'aborted' : 'network_or_runtime';
+		console.error(failureMessage, { operation: 'reply_edit', failure });
 	}
 }
