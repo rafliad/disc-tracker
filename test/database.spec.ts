@@ -61,16 +61,29 @@ describe('application migration', () => {
 	it('preserves a populated 0001 database when adding status-change tracking', async () => {
 		const db = env.disc_tracker_db;
 		// Rebuild only this isolated test's database at the pre-upgrade schema.
-		await db.batch([db.prepare('DROP TABLE status_changes'), db.prepare('DROP TABLE applications')]);
+		await db.batch([db.prepare('DROP TABLE IF EXISTS application_edits'), db.prepare('DROP TABLE status_changes'), db.prepare('DROP TABLE applications')]);
 		const migrations = inject('migrations');
 		await applyD1Migrations(db, migrations.slice(0,1), 'upgrade_test_migrations');
 		await insert('existing', undefined, '666666666666666666').run();
 		await db.prepare(`UPDATE applications SET status = 'Offer', job_url = 'https://example.com/job',
 			source = 'Referral', notes = 'Keep this note' WHERE id = 'existing'`).run();
 		const before = await db.prepare('SELECT * FROM applications').first();
-		await applyD1Migrations(db, migrations, 'upgrade_test_migrations');
+		await applyD1Migrations(db, migrations.slice(0,2), 'upgrade_test_migrations');
 		expect(await db.prepare('SELECT * FROM applications').first()).toEqual({...before, status_change_id:null});
 		expect(await db.prepare('SELECT COUNT(*) AS count FROM status_changes').first('count')).toBe(0);
+	});
+
+	it('preserves populated applications and status attempts when adding edits',async()=>{
+		const db=env.disc_tracker_db;
+		await db.batch([db.prepare('DROP TABLE IF EXISTS application_edits'),db.prepare('DROP TABLE status_changes'),db.prepare('DROP TABLE applications')]);
+		const migrations=inject('migrations');await applyD1Migrations(db,migrations.slice(0,2),'edit_upgrade_migrations');
+		await insert('existing',undefined,'666666666666666666').run();
+		await db.prepare(`INSERT INTO status_changes (id,application_id,from_status,to_status,state) VALUES ('previous','existing','Applied','Offer','complete')`).run();
+		const before=await db.prepare('SELECT * FROM applications').first();const previous=await db.prepare('SELECT * FROM status_changes').first();
+		await applyD1Migrations(db,migrations,'edit_upgrade_migrations');
+		expect(await db.prepare('SELECT * FROM applications').first()).toEqual({...before,details_version:0});
+		expect(await db.prepare('SELECT * FROM status_changes').first()).toEqual(previous);
+		expect(await db.prepare('SELECT COUNT(*) AS count FROM application_edits').first('count')).toBe(0);
 	});
 
 	it('indexes owner and update time for owner-scoped queries', async () => {

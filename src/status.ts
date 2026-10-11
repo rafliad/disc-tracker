@@ -6,7 +6,7 @@ import { isStatus, type StatusInput } from './status-form';
 
 interface ApplicationRow {
 	id: string; company: string; position: string; job_url: string | null; notes: string | null;
-	applied_at: string; status: string; discord_thread_id: string | null; status_change_id: string | null;
+	applied_at: string; status: string; discord_thread_id: string | null; status_change_id: string | null; details_version: number;
 }
 class StatusError extends Error {}
 const checking = (id: string) => `A status change is processing or needs checking. Do not repeat it until checked. Reference: ${id}.`;
@@ -43,12 +43,12 @@ export async function changeStatus(input: StatusInput, user: UserForum, id: stri
 		const claimed = await db.batch([
 			db.prepare(`INSERT INTO status_changes (id, application_id, from_status, to_status)
 				SELECT ?, id, status, ? FROM applications WHERE id = ? AND owner_discord_id = ? AND forum_channel_id = ?
-				AND status = ? AND discord_thread_id = ? AND status_change_id IS NULL ON CONFLICT(id) DO NOTHING`)
-				.bind(id, input.status, app, owner, user.forumChannelId, row.status, row.discord_thread_id),
+				AND status = ? AND discord_thread_id = ? AND details_version = ? AND status_change_id IS NULL ON CONFLICT(id) DO NOTHING`)
+				.bind(id, input.status, app, owner, user.forumChannelId, row.status, row.discord_thread_id, row.details_version),
 			db.prepare(`UPDATE applications SET status_change_id = ? WHERE id = ? AND owner_discord_id = ?
-				AND forum_channel_id = ? AND status = ? AND status_change_id IS NULL
+				AND forum_channel_id = ? AND status = ? AND details_version = ? AND status_change_id IS NULL
 				AND EXISTS (SELECT 1 FROM status_changes WHERE id = ? AND application_id = ? AND state = 'pending')`)
-				.bind(id, app, owner, user.forumChannelId, row.status, id, app),
+				.bind(id, app, owner, user.forumChannelId, row.status, row.details_version, id, app),
 		]);
 		if (claimed.some(result => result.meta.changes !== 1)) return await rejected('claim_lost');
 	} catch { return 'Database could not start this change. Check the D1 migration and application before retrying.'; }

@@ -7,6 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { test as nodeTest } from 'node:test';
 
 const commandDefinitions = [
+	{ name: 'edit', description: 'Edit details of one of your job applications.', options: [
+		{ type: 3, name: 'application', description: 'Your job application', required: true, autocomplete: true },
+	] },
 	{ name: 'test', description: 'Check that Job Tracker is connected.' },
 	{ name: 'apply', description: 'Track a new job application in your Forum.' },
 	{ name: 'status', description: 'Update one of your job applications.', options: [

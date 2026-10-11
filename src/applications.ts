@@ -2,20 +2,12 @@ import type { UserForum } from './authorization';
 import { isDiscordId, isRecord, type ApplicationInput } from './apply-form';
 
 import { discordRequest, editPrivateReply, noMentions } from './discord';
-import { applicationEmbed } from './application-embed';
+import { applicationEmbed, applicationTitle } from './application-embed';
 
 class UserFacingError extends Error {}
 
 function postLink(env: Env, threadId: string) {
 	return `https://discord.com/channels/${env.DISCORD_GUILD_ID}/${threadId}`;
-}
-function threadTitle(input: ApplicationInput) {
-	let title = '';
-	for (const character of `${input.company} — ${input.position}`) {
-		if (title.length + character.length > 100) break;
-		title += character;
-	}
-	return title;
 }
 
 /** Claim a modal once before external writes. The existing primary key is the deduplication key. */
@@ -53,7 +45,7 @@ export async function saveApplication(input: ApplicationInput, user: UserForum, 
 
 		creationAttempted = true;
 		const created = await discordRequest(`/channels/${user.forumChannelId}/threads`, env.DISCORD_TOKEN, 'POST', {
-			name: threadTitle(input), applied_tags: [tags[0].id],
+			name: applicationTitle(input), applied_tags: [tags[0].id],
 			message: { allowed_mentions: noMentions, embeds: [applicationEmbed(input, appliedAt)] },
 		});
 		if (!created.ok) {
