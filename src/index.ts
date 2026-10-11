@@ -1,4 +1,10 @@
 import { resolveUserForum } from './authorization';
+import { applyModal, isDiscordId, isRecord, parseApplication } from './apply-form';
+import { completeApplication } from './applications';
+
+function privateReply(content: string): Response {
+	return Response.json({ type: 4, data: { content, flags: 64 } });
+}
 
 /** Decode fixed-size hexadecimal keys/signatures without accepting partial values. */
 function decodeHex(value: string | null | undefined, byteLength: number): Uint8Array<ArrayBuffer> | null {
@@ -14,7 +20,7 @@ function decodeHex(value: string | null | undefined, byteLength: number): Uint8A
 }
 
 export default {
-	async fetch(request, env, _ctx): Promise<Response> {
+	async fetch(request, env, ctx): Promise<Response> {
 		if (new URL(request.url).pathname !== '/') {
 			return new Response('Not found', { status: 404 });
 		}
@@ -68,6 +74,26 @@ export default {
 		if (interaction.type === 1) {
 			return Response.json({ type: 1 });
 		}
+		const data = 'data' in interaction ? interaction.data : null;
+		const isApplyCommand = interaction.type === 2 && isRecord(data) && data.type === 1 && data.name === 'apply';
+		const isApplySubmit = interaction.type === 5 && isRecord(data) && typeof data.custom_id === 'string' && data.custom_id.startsWith('apply:');
+		if (isApplyCommand || isApplySubmit) {
+			const user = resolveUserForum(interaction, env);
+			if (!user) return privateReply('You do not have access to this tracker in this server.');
+			if (!('application_id' in interaction) || interaction.application_id !== env.DISCORD_APPLICATION_ID ||
+				!('id' in interaction) || !isDiscordId(interaction.id)) {
+				return privateReply('Invalid application request. Run /apply again.');
+			}
+			if (isApplyCommand) return Response.json(applyModal(interaction.id, user.ownerDiscordId));
+			const parsed = parseApplication(data, user.ownerDiscordId);
+			if ('error' in parsed) return privateReply(parsed.error);
+			if (!('token' in interaction) || typeof interaction.token !== 'string' || !interaction.token || interaction.token.length > 512) {
+				return privateReply('Invalid application request. Run /apply again.');
+			}
+			// ACK immediately; D1 and Discord REST work continue after the response.
+			ctx.waitUntil(completeApplication(parsed.value, user, interaction.token, env));
+			return Response.json({ type: 5, data: { flags: 64 } });
+		}
 		if (interaction.type === 2 && 'guild_id' in interaction && typeof interaction.guild_id === 'string' && interaction.guild_id) {
 			const command = 'data' in interaction ? interaction.data : null;
 			if (
@@ -101,7 +127,7 @@ export default {
 			}
 		}
 
-		// Application tracking commands are added after the M4 database/routing milestone.
+		// /status comes in M6.
 		return new Response('Unsupported interaction type', { status: 400 });
 	},
 } satisfies ExportedHandler<Env>;

@@ -1,43 +1,7 @@
 import { env, createExecutionContext, SELF } from 'cloudflare:test';
-import { beforeAll, describe, expect, inject, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import worker from '../src/index';
-
-declare module 'vitest' {
-	interface ProvidedContext {
-		signingKeyPkcs8: string;
-	}
-}
-
-const endpoint = 'https://example.com/';
-const pingBody = '{"type":1}';
-const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
-const ownerId = '111111111111111111';
-const friendId = '222222222222222222';
-const guildId = '555555555555555555';
-function testCommand(userId = ownerId, serverId = guildId) {
-	return { type: 2, guild_id: serverId, member: { user: { id: userId } }, data: { type: 1, name: 'test' } };
-}
-let signingKey: CryptoKey;
-
-beforeAll(async () => {
-	const privateKey = Uint8Array.from(atob(inject('signingKeyPkcs8')), (character) => character.charCodeAt(0));
-	signingKey = await crypto.subtle.importKey('pkcs8', privateKey, 'Ed25519', false, ['sign']);
-});
-
-async function signedRequest(body = pingBody): Promise<Request<unknown, IncomingRequestCfProperties>> {
-	const timestamp = String(Math.floor(Date.now() / 1000));
-	const signature = await crypto.subtle.sign('Ed25519', signingKey, new TextEncoder().encode(timestamp + body));
-	const signatureHex = Array.from(new Uint8Array(signature), (byte) => byte.toString(16).padStart(2, '0')).join('');
-	return new IncomingRequest(endpoint, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'X-Signature-Ed25519': signatureHex,
-			'X-Signature-Timestamp': timestamp,
-		},
-		body,
-	});
-}
+import { endpoint, pingBody, IncomingRequest, ownerId, friendId, guildId, testCommand, signedRequest } from './helpers';
 
 describe('Discord interactions endpoint', () => {
 	it('provides a public GET health check', async () => {
@@ -185,7 +149,7 @@ describe('Discord interactions endpoint', () => {
 
 	it.each([
 		{ label: 'DM', payload: { type: 2, data: { type: 1, name: 'test' } } },
-		{ label: 'unknown command', payload: { type: 2, guild_id: '123456789012345678', data: { type: 1, name: 'apply' } } },
+		{ label: 'unknown command', payload: { type: 2, guild_id: '123456789012345678', data: { type: 1, name: 'unknown' } } },
 		{ label: 'user context command', payload: { type: 2, guild_id: '123456789012345678', data: { type: 2, name: 'test' } } },
 	])('does not handle $label as the guild /test command', async ({ payload }) => {
 		expect((await SELF.fetch(await signedRequest(JSON.stringify(payload)))).status).toBe(400);
