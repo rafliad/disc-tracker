@@ -7,8 +7,15 @@
 	"name": "tracker-bot",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-10-06",
+	"d1_databases": [
+		{
+			"binding": "disc_tracker_db",
+			"database_name": "disc-tracker-db",
+			"database_id": "6d876e2e-c0cb-45e3-af8b-3dde15ad801d"
+		}
+	],
 	"secrets": {
-		"required": ["DISCORD_APPLICATION_ID", "DISCORD_PUBLIC_KEY", "DISCORD_TOKEN"]
+		"required": ["DISCORD_APPLICATION_ID", "DISCORD_PUBLIC_KEY", "DISCORD_TOKEN", "DISCORD_GUILD_ID", "USER_FORUM_MAP"]
 	},
 	"observability": {
 		"enabled": true

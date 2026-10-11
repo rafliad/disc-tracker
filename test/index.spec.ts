@@ -1,5 +1,5 @@
 import { env, createExecutionContext, SELF } from 'cloudflare:test';
-import { beforeAll, describe, expect, inject, it } from 'vitest';
+import { beforeAll, describe, expect, inject, it, vi } from 'vitest';
 import worker from '../src/index';
 
 declare module 'vitest' {
@@ -11,6 +11,12 @@ declare module 'vitest' {
 const endpoint = 'https://example.com/';
 const pingBody = '{"type":1}';
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
+const ownerId = '111111111111111111';
+const friendId = '222222222222222222';
+const guildId = '555555555555555555';
+function testCommand(userId = ownerId, serverId = guildId) {
+	return { type: 2, guild_id: serverId, member: { user: { id: userId } }, data: { type: 1, name: 'test' } };
+}
 let signingKey: CryptoKey;
 
 beforeAll(async () => {
@@ -107,14 +113,69 @@ describe('Discord interactions endpoint', () => {
 		expect((await SELF.fetch(await signedRequest('{"type":2}'))).status).toBe(400);
 	});
 
-	it('answers a signed guild /test with an ephemeral confirmation', async () => {
-		const body = JSON.stringify({ type: 2, guild_id: '123456789012345678', data: { type: 1, name: 'test' } });
+	it.each([
+		{ userId: ownerId, forumId: '333333333333333333' },
+		{ userId: friendId, forumId: '444444444444444444' },
+	])('answers /test for $userId with only their own Forum', async ({ userId, forumId }) => {
+		const body = JSON.stringify(testCommand(userId));
 		const response = await SELF.fetch(await signedRequest(body));
 		expect(response.status).toBe(200);
 		expect(await response.json()).toEqual({
 			type: 4,
-			data: { content: 'Job Tracker is connected!', flags: 64 },
+			data: { content: `Job Tracker is connected!\nDatabase is ready. Your Forum: <#${forumId}>.`, flags: 64 },
 		});
+	});
+
+	it.each([
+		{ label: 'unknown user', payload: testCommand('123456789012345678') },
+		{ label: 'other server', payload: testCommand(ownerId, '123456789012345678') },
+		{ label: 'missing member', payload: { ...testCommand(), member: undefined } },
+		{ label: 'DM user field in a guild', payload: { ...testCommand(), member: undefined, user: { id: ownerId } } },
+		{ label: 'numeric user ID', payload: { ...testCommand(), member: { user: { id: 111111111111111111 } } } },
+		{ label: 'inherited map property', payload: testCommand('toString') },
+	])('denies $label with a private response before querying D1', async ({ payload }) => {
+		const prepare = vi.fn(() => { throw new Error('must not query D1'); });
+		const response = await worker.fetch(await signedRequest(JSON.stringify(payload)), {
+			...env, disc_tracker_db: { prepare } as unknown as D1Database,
+		}, createExecutionContext());
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			type: 4, data: { content: 'You do not have access to this tracker in this server.', flags: 64 },
+		});
+		expect(prepare).not.toHaveBeenCalled();
+	});
+
+	it('uses the invoking member rather than a different top-level user', async () => {
+		const response = await SELF.fetch(await signedRequest(JSON.stringify({ ...testCommand(), user: { id: friendId } })));
+		const reply = await response.json<{ data: { content: string } }>();
+		expect(reply.data.content).toContain('<#333333333333333333>');
+		expect(reply.data.content).not.toContain('444444444444444444');
+	});
+
+	it.each(['not JSON', 'null', '[]', '1', '{"111111111111111111":123}', '{"111111111111111111":""}'])
+	('fails closed for invalid routing configuration (%s)', async (mapping) => {
+		const prepare = vi.fn(() => { throw new Error('must not query D1'); });
+		const response = await worker.fetch(await signedRequest(JSON.stringify(testCommand())), {
+			...env, USER_FORUM_MAP: mapping, disc_tracker_db: { prepare } as unknown as D1Database,
+		}, createExecutionContext());
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			type: 4, data: { content: 'You do not have access to this tracker in this server.', flags: 64 },
+		});
+		expect(prepare).not.toHaveBeenCalled();
+	});
+
+	it('privately explains that the database needs setup when its table is missing', async () => {
+		await env.disc_tracker_db.prepare('ALTER TABLE applications RENAME TO applications_unavailable').run();
+		try {
+			const response = await SELF.fetch(await signedRequest(JSON.stringify(testCommand())));
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual({
+				type: 4, data: { content: 'Database is not ready. Apply the D1 migration, then try /test again.', flags: 64 },
+			});
+		} finally {
+			await env.disc_tracker_db.prepare('ALTER TABLE applications_unavailable RENAME TO applications').run();
+		}
 	});
 
 	it('rejects an unsigned /test request', async () => {

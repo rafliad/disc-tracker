@@ -1,3 +1,5 @@
+import { resolveUserForum } from './authorization';
+
 /** Decode fixed-size hexadecimal keys/signatures without accepting partial values. */
 function decodeHex(value: string | null | undefined, byteLength: number): Uint8Array<ArrayBuffer> | null {
 	if (!value || value.length !== byteLength * 2 || !/^[0-9a-f]+$/i.test(value)) {
@@ -73,9 +75,28 @@ export default {
 				'type' in command && command.type === 1 &&
 				'name' in command && command.name === 'test'
 			) {
+				const userForum = resolveUserForum(interaction, env);
+				if (!userForum) {
+					return Response.json({
+						type: 4,
+						data: { content: 'You do not have access to this tracker in this server.', flags: 64 },
+					});
+				}
+				try {
+					// Check the binding and migrated table without reading application data.
+					await env.disc_tracker_db.prepare('SELECT id FROM applications LIMIT 0').all();
+				} catch {
+					return Response.json({
+						type: 4,
+						data: { content: 'Database is not ready. Apply the D1 migration, then try /test again.', flags: 64 },
+					});
+				}
 				return Response.json({
 					type: 4, // CHANNEL_MESSAGE_WITH_SOURCE
-					data: { content: 'Job Tracker is connected!', flags: 64 }, // EPHEMERAL
+					data: {
+						content: `Job Tracker is connected!\nDatabase is ready. Your Forum: <#${userForum.forumChannelId}>.`,
+						flags: 64, // EPHEMERAL
+					},
 				});
 			}
 		}
