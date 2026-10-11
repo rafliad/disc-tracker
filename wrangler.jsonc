@@ -7,6 +7,9 @@
 	"name": "tracker-bot",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-10-06",
+	"secrets": {
+		"required": ["DISCORD_APPLICATION_ID", "DISCORD_PUBLIC_KEY", "DISCORD_TOKEN"]
+	},
 	"observability": {
 		"enabled": true
 	},
