@@ -3,7 +3,7 @@
 A private Discord job application tracker for two users. The intended MVP uses
 `/apply`, `/status`, separate Discord Forum Channels, and Cloudflare D1.
 
-## Current milestone: M4
+## Current milestone: M5
 
 This change implements the Discord Interactions endpoint at the Worker's root URL:
 
@@ -17,13 +17,108 @@ This change implements the Discord Interactions endpoint at the Worker's root UR
 - Unknown members and requests from another server receive a private denial.
   Guild identity comes from `member.user.id`; the DM `user` field is never used
   to authorize guild commands. Authorization happens before any database query.
+- `/apply` opens an owner-bound modal. A valid submission is acknowledged
+  privately immediately, then saved to D1 and posted to that user's Forum with
+  its `Applied` tag. The private confirmation links to the new post.
 - Signed malformed payloads and interaction types not implemented yet return 400.
 - A missing or malformed configured public key returns 500 for a signed request.
 - Other paths return 404; unsupported methods at `/` return 405.
 
-M3 endpoint registration and the live `/test` reply have been confirmed by the
-project owner. M4 adds D1, the application schema, and per-user Forum routing.
-`/apply` and `/status` come in later milestones.
+M3 endpoint registration and M4's live database/Forum `/test` reply have been
+confirmed by the project owner. M5 implements `/apply`; `/status` comes in M6.
+
+## Deploy and try `/apply` (M5)
+
+After merging, pull the changes into your existing project folder. If Git reports
+uncommitted changes, keep and resolve those edits before switching or pulling.
+
+```powershell
+git switch master
+git pull --ff-only origin master
+npm ci
+npm test -- --run
+npm run test:scripts
+npx tsc --noEmit
+npx tsc --noEmit -p test/tsconfig.json
+npm run deploy
+npm run register:apply -- YOUR_SERVER_ID
+```
+
+Replace `YOUR_SERVER_ID` with your existing server ID. Registration reads the
+existing local Bot Token and Application ID from `.dev.vars` (Node.js 22 or newer).
+It creates/updates only this guild's `/apply` and preserves `/test` and other
+commands. Keep the existing production secrets and Interactions Endpoint URL.
+M5 adds no new secrets or migrations; it uses M4's existing application table.
+
+Each configured Forum must have **exactly one tag named `Applied`**. The Worker
+reads that Forum's tags from Discord when saving an application, so tag IDs do not
+need to be copied or stored. The channel must be a Forum in the configured server,
+and the bot needs permission to view it, send messages/create Forum posts, and
+embed links. Applying moderated tags also requires Manage Threads permission.
+
+In your bot command channel:
+
+1. Run `/test` and confirm database readiness and your Forum.
+2. Select this app's `/apply` command. The modal contains Company and Position
+   (required, up to 100 characters each), Job URL (optional, up to 1000), and Notes
+   (optional, up to 2000).
+3. Try Company `Example Company`, Position `Software Engineer`, a valid HTTPS
+   job URL, and a short note. Submit once.
+4. Expect a private **Application saved — Applied** reply with a post link.
+5. Open that link and verify it is in your Forum, has the `Applied` tag, and shows
+   the company, position, date, URL, and notes. The date uses **Asia/Jakarta**;
+   database creation/update timestamps remain UTC.
+6. Try a second application with URL and Notes left empty. It should save too.
+
+You can do these live checks yourself; your friend does not need to join yet.
+Automated tests cover both routes using fictional IDs and mocked Discord requests.
+Running the tests sends no messages or registration requests to Discord.
+
+## `/apply` retries and failures
+
+The form is bound to the invoking member. Every signed submission rechecks server,
+member, and ownership; owner and Forum cannot be selected through form fields.
+Job URLs must be HTTP/S without embedded credentials. The Worker displays them
+but never fetches them. All posted messages suppress user/role/everyone mentions.
+
+The opening command's interaction ID is the application primary key, so retries
+of the same modal share one record. The Worker atomically claims it before posting
+to Discord. A duplicate returns the existing post, or explains that processing or
+manual checking is still needed; it does not create a second post.
+
+| Outcome | Behavior |
+| --- | --- |
+| Validation or authorization fails | Private error, no database writes or Discord calls. |
+| Initial D1 save fails | No Forum post is attempted; private database error. |
+| Forum lookup/tag validation fails, or creation returns a definite 4xx error | Pending record is removed, and the private reply explains what to fix. |
+| Creation times out, returns 5xx, or has an unexpected success body | Pending record is kept because a post may exist. Private reply asks you to check the Forum before resubmitting. |
+| Post exists but saving its thread ID fails | Pending record is kept; private reply gives the actual post link and a reference for repair. |
+| Private confirmation cannot be delivered | The saved record/post is kept; Worker logs a generic delivery failure without payloads or tokens. Check the Forum before resubmitting. |
+
+For an uncertain or pending result, do not open another `/apply` form until you
+have checked the Forum and database. Reopening creates a new application key.
+Use the private reference to inspect the matching row via Cloudflare D1. If the
+post exists, confirm it is the matching application in the owner's configured
+Forum and link its thread ID to that row. If you have confirmed no post exists,
+remove only that pending row before retrying. Do not delete existing Forum posts
+as an automatic rollback.
+
+Operator repair SQL (replace placeholders only after checking both systems):
+
+```sql
+UPDATE applications
+SET discord_thread_id = 'CONFIRMED_THREAD_ID',
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE id = 'REFERENCE_ID'
+  AND owner_discord_id = 'OWNER_DISCORD_ID'
+  AND discord_thread_id IS NULL;
+```
+
+If `/apply` is missing, refresh Discord and check registration/install permissions.
+For a Forum error, check the mapping, channel type, bot permissions, and exact tag
+name. For rate limiting, wait before retrying. If Discord shows no confirmation,
+inspect the Forum and use `npx wrangler tail` to check generic Worker errors; do
+not add request-body or token logging.
 
 ## Database and user routing (M4)
 
@@ -58,6 +153,8 @@ does not invite anyone, send a DM, create a Forum post, or make a Discord API
 request. The friend can be configured before joining the server. Automated tests
 use fictional IDs and synthetic signed interactions; no friend participation is needed.
 `/test` displays the configured Forum; it does not yet verify bot permissions in it.
+`/apply` contacts Discord and creates a post only when an authorized member submits
+an application; merely configuring or deploying the mapping does not do that.
 
 `migrations/0001_create_applications.sql` creates a single `applications` table:
 
@@ -230,3 +327,5 @@ confirm this Worker version was deployed and inspect statuses with `npx wrangler
 - [Finding Discord server IDs](https://support.discord.com/hc/en-us/articles/206346498)
 - [D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/)
 - [Workers tests with D1 migrations](https://developers.cloudflare.com/workers/testing/vitest-integration/test-apis/#d1)
+- [Discord modal components](https://docs.discord.com/developers/components/using-modal-components)
+- [Discord Forum posts and tags](https://docs.discord.com/developers/resources/channel#start-thread-in-forum-or-media-channel)

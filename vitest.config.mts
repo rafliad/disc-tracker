@@ -6,7 +6,7 @@ import { generateKeyPairSync } from "node:crypto";
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 const publicKeyHex = publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
 const testBindings = {
-	DISCORD_APPLICATION_ID: "test-application",
+	DISCORD_APPLICATION_ID: "777777777777777777",
 	DISCORD_PUBLIC_KEY: publicKeyHex,
 	DISCORD_TOKEN: "test-token",
 	DISCORD_GUILD_ID: "555555555555555555",
