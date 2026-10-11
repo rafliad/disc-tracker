@@ -93,7 +93,19 @@ manual checking is still needed; it does not create a second post.
 | Forum lookup/tag validation fails, or creation returns a definite 4xx error | Pending record is removed, and the private reply explains what to fix. |
 | Creation times out, returns 5xx, or has an unexpected success body | Pending record is kept because a post may exist. Private reply asks you to check the Forum before resubmitting. |
 | Post exists but saving its thread ID fails | Pending record is kept; private reply gives the actual post link and a reference for repair. |
-| Private confirmation cannot be delivered | The saved record/post is kept; Worker logs a generic delivery failure without payloads or tokens. Check the Forum before resubmitting. |
+| Private confirmation cannot be delivered | The saved record/post is kept; Worker logs the HTTP status and numeric Discord error code, or a fixed timeout/network category. Check the Forum before resubmitting. |
+
+If Discord stays on **thinking**, inspect **Workers & Pages → tracker-bot →
+Observability** for `apply: private reply delivery failed`. Expand that event to
+see `operation: reply_edit` and its diagnostic fields: `failure: http` includes
+`http_status` and `discord_code` (null if no numeric JSON code was returned).
+Other categories are `timeout`, `aborted`, or `network_or_runtime`. Logs omit
+tokens, webhook URLs, API messages/bodies, and application text. This logging
+helps diagnose failed replies; it does not retry or repair them.
+
+Check whether the Forum post exists and inspect the corresponding D1 row before
+retrying the original application. To reproduce after deploying diagnostics,
+use one clearly labeled, separate test application and submit it only once.
 
 For an uncertain or pending result, do not open another `/apply` form until you
 have checked the Forum and database. Reopening creates a new application key.

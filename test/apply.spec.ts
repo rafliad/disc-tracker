@@ -26,7 +26,8 @@ function submission(userId = ownerId, values: Partial<Record<'company' | 'positi
 
 type Call = { url: string; method: string; body: any; authorization: string | null };
 function mockDiscord(options: { missingTag?: boolean; wrongGuild?: boolean; channelStatus?: number;
-	postStatus?: number; postThrows?: boolean; invalidThread?: boolean; replyStatus?: number; gate?: Promise<void> } = {}) {
+	postStatus?: number; postThrows?: boolean; invalidThread?: boolean; replyStatus?: number;
+	replyBody?: unknown; replyHtml?: boolean; replyError?: Error; gate?: Promise<void> } = {}) {
 	const calls: Call[] = [];
 	vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
 		const url = String(input);
@@ -44,7 +45,9 @@ function mockDiscord(options: { missingTag?: boolean; wrongGuild?: boolean; chan
 			if (options.postThrows) throw new Error('sensitive network detail ' + token);
 			return Response.json(options.invalidThread ? {} : { id: threadId }, { status: options.postStatus ?? 201 });
 		}
-		return Response.json({ id: '101010101010101010' }, { status: options.replyStatus ?? 200 });
+		if (options.replyError) throw options.replyError;
+		if (options.replyHtml) return new Response('sensitive proxy body ' + token, { status: options.replyStatus ?? 403 });
+		return Response.json(options.replyBody ?? { id: '101010101010101010' }, { status: options.replyStatus ?? 200 });
 	});
 	return calls;
 }
@@ -260,6 +263,51 @@ describe('/apply', () => {
 		expect(JSON.stringify(log.mock.calls)).not.toContain(token);
 		await run(submission());
 		expect(calls.filter((call) => call.method === 'POST')).toHaveLength(1);
+	});
+
+	it.each([
+		{ status: 404, code: 10015 }, { status: 401, code: 50027 }, { status: 429, code: 20028 },
+	])('records the HTTP $status and numeric Discord error code for a failed private reply', async ({ status, code }) => {
+		mockDiscord({ replyStatus: status, replyBody: { code, message: `sensitive ${token}`, content: 'Example Company' } });
+		const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+		await run(submission());
+		expect(log).toHaveBeenCalledExactlyOnceWith(
+			'apply: private reply delivery failed; check the Forum and database before resubmitting.',
+			{ operation: 'reply_edit', failure: 'http', http_status: status, discord_code: code },
+		);
+		expect(JSON.stringify(log.mock.calls)).not.toMatch(/fixture-interaction-token|Example Company|webhooks|sensitive/);
+		expect(await env.disc_tracker_db.prepare('SELECT discord_thread_id FROM applications').first('discord_thread_id')).toBe(threadId);
+	});
+
+	it.each([
+		{ label: 'HTML error response', options: { replyStatus: 403, replyHtml: true } },
+		{ label: 'untrusted code string', options: { replyStatus: 403, replyBody: { code: token, message: token } } },
+	])('records the HTTP status without leaking an $label', async ({ options }) => {
+		mockDiscord(options);
+		const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+		await run(submission());
+		expect(log).toHaveBeenCalledExactlyOnceWith(
+			'apply: private reply delivery failed; check the Forum and database before resubmitting.',
+			{ operation: 'reply_edit', failure: 'http', http_status: 403, discord_code: null },
+		);
+		expect(JSON.stringify(log.mock.calls)).not.toContain(token);
+	});
+
+	it.each([
+		{ name: 'TimeoutError', failure: 'timeout' }, { name: 'AbortError', failure: 'aborted' },
+		{ name: 'TypeError', failure: 'network_or_runtime' }, { name: token, failure: 'network_or_runtime' },
+	])('safely classifies a private reply exception ($failure)', async ({ name, failure }) => {
+		const error = new Error(`sensitive URL /webhooks/${token}`);
+		error.name = name;
+		mockDiscord({ replyError: error });
+		const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+		await run(submission());
+		expect(log).toHaveBeenCalledExactlyOnceWith(
+			'apply: private reply delivery failed; check the Forum and database before resubmitting.',
+			{ operation: 'reply_edit', failure },
+		);
+		expect(JSON.stringify(log.mock.calls)).not.toMatch(/fixture-interaction-token|webhooks|sensitive/);
+		expect(await count()).toBe(1);
 	});
 
 	it('reports a retained pending record when cleanup fails', async () => {
