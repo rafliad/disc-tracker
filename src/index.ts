@@ -66,8 +66,21 @@ export default {
 		if (interaction.type === 1) {
 			return Response.json({ type: 1 });
 		}
+		if (interaction.type === 2 && 'guild_id' in interaction && typeof interaction.guild_id === 'string' && interaction.guild_id) {
+			const command = 'data' in interaction ? interaction.data : null;
+			if (
+				typeof command === 'object' && command !== null &&
+				'type' in command && command.type === 1 &&
+				'name' in command && command.name === 'test'
+			) {
+				return Response.json({
+					type: 4, // CHANNEL_MESSAGE_WITH_SOURCE
+					data: { content: 'Job Tracker is connected!', flags: 64 }, // EPHEMERAL
+				});
+			}
+		}
 
-		// Slash command handling is added in M3.4 after endpoint registration succeeds.
+		// Application tracking commands are added after the M4 database/routing milestone.
 		return new Response('Unsupported interaction type', { status: 400 });
 	},
 } satisfies ExportedHandler<Env>;

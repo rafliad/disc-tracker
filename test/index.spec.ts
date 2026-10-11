@@ -103,8 +103,31 @@ describe('Discord interactions endpoint', () => {
 		expect((await SELF.fetch(await signedRequest(body))).status).toBe(400);
 	});
 
-	it('does not pretend to handle commands before M3.4', async () => {
+	it('rejects a command interaction with missing command data', async () => {
 		expect((await SELF.fetch(await signedRequest('{"type":2}'))).status).toBe(400);
+	});
+
+	it('answers a signed guild /test with an ephemeral confirmation', async () => {
+		const body = JSON.stringify({ type: 2, guild_id: '123456789012345678', data: { type: 1, name: 'test' } });
+		const response = await SELF.fetch(await signedRequest(body));
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			type: 4,
+			data: { content: 'Job Tracker is connected!', flags: 64 },
+		});
+	});
+
+	it('rejects an unsigned /test request', async () => {
+		const body = JSON.stringify({ type: 2, guild_id: '123456789012345678', data: { type: 1, name: 'test' } });
+		expect((await SELF.fetch(endpoint, { method: 'POST', body })).status).toBe(401);
+	});
+
+	it.each([
+		{ label: 'DM', payload: { type: 2, data: { type: 1, name: 'test' } } },
+		{ label: 'unknown command', payload: { type: 2, guild_id: '123456789012345678', data: { type: 1, name: 'apply' } } },
+		{ label: 'user context command', payload: { type: 2, guild_id: '123456789012345678', data: { type: 2, name: 'test' } } },
+	])('does not handle $label as the guild /test command', async ({ payload }) => {
+		expect((await SELF.fetch(await signedRequest(JSON.stringify(payload)))).status).toBe(400);
 	});
 
 	it.each(['', 'invalid-public-key'])('returns a server error for a misconfigured public key (%s)', async (publicKey) => {

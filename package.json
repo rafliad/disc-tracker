@@ -7,7 +7,9 @@
     "dev": "wrangler dev",
     "start": "wrangler dev",
     "test": "vitest",
-    "cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types",
+    "register:test": "node scripts/register-test-command.mjs",
+    "test:scripts": "node --test test/register-test-command.node.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.0.0",
