@@ -24,16 +24,18 @@ function submission(userId = ownerId, values: Partial<Record<'company' | 'positi
 		} };
 }
 
-type Call = { url: string; method: string; body: any; authorization: string | null };
+type Call = { url: string; method: string; body: any; authorization: string | null; redirect: string };
 function mockDiscord(options: { missingTag?: boolean; wrongGuild?: boolean; channelStatus?: number;
 	postStatus?: number; postThrows?: boolean; invalidThread?: boolean; replyStatus?: number;
 	replyBody?: unknown; replyHtml?: boolean; replyError?: Error; gate?: Promise<void> } = {}) {
 	const calls: Call[] = [];
 	vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+		// Exercise workerd's real Request validation before replacing network I/O.
+		const request = new Request(String(input), init);
 		const url = String(input);
 		const method = init?.method ?? 'GET';
 		const body = init?.body ? JSON.parse(String(init.body)) : null;
-		calls.push({ url, method, body, authorization: new Headers(init?.headers).get('Authorization') });
+		calls.push({ url, method, body, authorization: new Headers(init?.headers).get('Authorization'), redirect: request.redirect });
 		if (method === 'GET') {
 			await options.gate;
 			const id = url.split('/').at(-1);
@@ -64,6 +66,45 @@ async function count() {
 afterEach(() => vi.restoreAllMocks());
 
 describe('/apply', () => {
+	it('saves and confirms using options accepted by the real Workers Request constructor', async () => {
+		const calls = mockDiscord();
+		const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+		await run(submission());
+		expect(await env.disc_tracker_db.prepare('SELECT discord_thread_id FROM applications').first('discord_thread_id')).toBe(threadId);
+		expect(calls.map((call) => call.method)).toEqual(['GET', 'POST', 'PATCH']);
+		expect(calls.every((call) => call.redirect === 'manual')).toBe(true);
+		expect(calls.at(-1)?.body.content).toContain('Application saved — Applied');
+		expect(log).not.toHaveBeenCalled();
+	});
+
+	it('rejects a Forum lookup redirect without creating a post or retaining the claim', async () => {
+		const calls = mockDiscord({ channelStatus: 302 });
+		await run(submission());
+		expect(calls.map((call) => call.method)).toEqual(['GET', 'PATCH']);
+		expect(calls.every((call) => call.redirect === 'manual')).toBe(true);
+		expect(calls.at(-1)?.body.content).toContain('HTTP 302');
+		expect(await count()).toBe(0);
+	});
+
+	it('retains an uncertain creation redirect and never reposts a duplicate submission', async () => {
+		const calls = mockDiscord({ postStatus: 307 });
+		await run(submission());
+		expect(await count()).toBe(1);
+		expect(calls.at(-1)?.body.content).toContain('Do not submit again');
+		await run(submission());
+		expect(calls.filter((call) => call.method === 'POST')).toHaveLength(1);
+		expect(calls.every((call) => call.redirect === 'manual')).toBe(true);
+	});
+
+	it('logs a confirmation redirect while preserving the saved post', async () => {
+		const calls = mockDiscord({ replyStatus: 308 });
+		const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+		await run(submission());
+		expect(await env.disc_tracker_db.prepare('SELECT discord_thread_id FROM applications').first('discord_thread_id')).toBe(threadId);
+		expect(calls.every((call) => call.redirect === 'manual')).toBe(true);
+		expect(log).toHaveBeenCalledWith(expect.any(String), { operation: 'reply_edit', failure: 'http', http_status: 308, discord_code: null });
+	});
+
 	it('opens the four-field modal for an authorized guild member without doing background work', async () => {
 		const calls = mockDiscord();
 		const response = await SELF.fetch(await signedRequest(JSON.stringify(command())));

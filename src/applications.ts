@@ -10,7 +10,8 @@ async function discordRequest(path: string, token: string | null, method = 'GET'
 	return fetch(`${api}${path}`, {
 		method, headers: { ...(token ? { Authorization: `Bot ${token}` } : {}), 'Content-Type': 'application/json' },
 		...(body === undefined ? {} : { body: JSON.stringify(body) }),
-		redirect: 'error', signal: AbortSignal.timeout(5000),
+		// workerd rejects redirect: 'error'; manual keeps credentials on this origin.
+		redirect: 'manual', signal: AbortSignal.timeout(5000),
 	});
 }
 
