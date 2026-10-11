@@ -1,19 +1,10 @@
 import type { UserForum } from './authorization';
 import { isDiscordId, isRecord, type ApplicationInput } from './apply-form';
 
-const api = 'https://discord.com/api/v10';
-const noMentions = { parse: [] };
+import { discordRequest, editPrivateReply, noMentions } from './discord';
+import { applicationEmbed } from './application-embed';
 
 class UserFacingError extends Error {}
-
-async function discordRequest(path: string, token: string | null, method = 'GET', body?: unknown): Promise<Response> {
-	return fetch(`${api}${path}`, {
-		method, headers: { ...(token ? { Authorization: `Bot ${token}` } : {}), 'Content-Type': 'application/json' },
-		...(body === undefined ? {} : { body: JSON.stringify(body) }),
-		// workerd rejects redirect: 'error'; manual keeps credentials on this origin.
-		redirect: 'manual', signal: AbortSignal.timeout(5000),
-	});
-}
 
 function postLink(env: Env, threadId: string) {
 	return `https://discord.com/channels/${env.DISCORD_GUILD_ID}/${threadId}`;
@@ -60,18 +51,10 @@ export async function saveApplication(input: ApplicationInput, user: UserForum, 
 		const tags = Array.isArray(channel.available_tags) ? channel.available_tags.filter((tag) => isRecord(tag) && tag.name === 'Applied' && isDiscordId(tag.id)) : [];
 		if (tags.length !== 1) throw new UserFacingError('Your Forum needs exactly one tag named Applied. Add or correct that tag, then try again.');
 
-		const fields = [
-			{ name: 'Status', value: 'Applied', inline: true },
-			{ name: 'Applied date', value: appliedAt, inline: true },
-			...(input.jobUrl ? [{ name: 'Job URL', value: input.jobUrl, inline: false }] : []),
-		];
 		creationAttempted = true;
 		const created = await discordRequest(`/channels/${user.forumChannelId}/threads`, env.DISCORD_TOKEN, 'POST', {
 			name: threadTitle(input), applied_tags: [tags[0].id],
-			message: { allowed_mentions: noMentions, embeds: [{
-				title: `${input.company} — ${input.position}`, fields,
-				...(input.notes ? { description: input.notes } : {}),
-			}] },
+			message: { allowed_mentions: noMentions, embeds: [applicationEmbed(input, appliedAt)] },
 		});
 		if (!created.ok) {
 			// A server/network failure may have happened after Discord created the post.
@@ -102,31 +85,11 @@ export async function saveApplication(input: ApplicationInput, user: UserForum, 
 
 /** Complete the deferred ephemeral response without storing or logging its token. */
 export async function completeApplication(input: ApplicationInput, user: UserForum, interactionToken: string, env: Env): Promise<void> {
-	const failureMessage = 'apply: private reply delivery failed; check the Forum and database before resubmitting.';
 	let content: string;
 	try {
 		content = await saveApplication(input, user, env);
 	} catch {
 		content = 'The application could not be completed. Check your Forum before trying again.';
 	}
-	try {
-		const response = await discordRequest(`/webhooks/${env.DISCORD_APPLICATION_ID}/${encodeURIComponent(interactionToken)}/messages/@original`, null, 'PATCH', {
-			content, allowed_mentions: noMentions,
-		});
-		if (!response.ok) {
-			let discordCode: number | null = null;
-			try {
-				const body: unknown = await response.json();
-				if (isRecord(body) && typeof body.code === 'number' && Number.isSafeInteger(body.code) && body.code >= 0) discordCode = body.code;
-			} catch {
-				// Proxies may return HTML; preserve the HTTP status without logging the body.
-			}
-			console.error(failureMessage, { operation: 'reply_edit', failure: 'http', http_status: response.status, discord_code: discordCode });
-		}
-	} catch (error) {
-		// Only fixed categories: exception messages/URLs can contain interaction tokens.
-		const failure = isRecord(error) && error.name === 'TimeoutError' ? 'timeout'
-			: isRecord(error) && error.name === 'AbortError' ? 'aborted' : 'network_or_runtime';
-		console.error(failureMessage, { operation: 'reply_edit', failure });
-	}
+	await editPrivateReply(content, interactionToken, env, 'apply');
 }

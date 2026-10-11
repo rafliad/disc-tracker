@@ -3,7 +3,7 @@
 A private Discord job application tracker for two users. The intended MVP uses
 `/apply`, `/status`, separate Discord Forum Channels, and Cloudflare D1.
 
-## Current milestone: M5
+## Current milestone: M6
 
 This change implements the Discord Interactions endpoint at the Worker's root URL:
 
@@ -20,12 +20,122 @@ This change implements the Discord Interactions endpoint at the Worker's root UR
 - `/apply` opens an owner-bound modal. A valid submission is acknowledged
   privately immediately, then saved to D1 and posted to that user's Forum with
   its `Applied` tag. The private confirmation links to the new post.
+- `/status application:… status:…` suggests only that member's saved applications.
+  It privately defers, updates the Forum tag and starter status, writes a history
+  message, and commits the new D1 status. Duplicate and concurrent requests are guarded.
 - Signed malformed payloads and interaction types not implemented yet return 400.
 - A missing or malformed configured public key returns 500 for a signed request.
 - Other paths return 404; unsupported methods at `/` return 405.
 
 M3 endpoint registration and M4's live database/Forum `/test` reply have been
-confirmed by the project owner. M5 implements `/apply`; `/status` comes in M6.
+confirmed by the project owner. M5 `/apply` also passed its live check after fixing
+the Worker redirect option and correcting the private Forum mapping. M6 adds
+`/status`; its live checks remain to be done after deployment.
+
+## Deploy and try `/status` (M6)
+
+After merging, run from your existing project folder:
+
+```powershell
+git switch master
+git pull --ff-only origin master
+npm ci
+npm test -- --run
+npm run test:scripts
+npx tsc --noEmit
+npx tsc --noEmit -p test/tsconfig.json
+npx wrangler d1 migrations apply disc-tracker-db --remote
+npm run deploy
+npm run register:status -- YOUR_SERVER_ID
+```
+
+Migration `0002_status_changes.sql` preserves existing applications and adds
+durable change attempts plus a nullable claim. Apply it before deploying M6.
+There are no new bindings or secrets. Registration reads your existing local
+credentials and upserts only `/status`, preserving `/apply` and `/test`.
+
+Both Forums need exactly one tag for each of these names: **Applied, Screening,
+Assessment, Interview, Offer, Rejected, Withdrawn**. Check the bot's permissions
+in both Forums: View Channel, Send Messages, Send Messages in Threads, Embed
+Links, Read Message History, and Manage Threads. Administrator is not required.
+
+1. Use `/status`, start typing your test company's name in `application`, then
+   select the suggested application. Search matches literal company/position
+   text; SQLite's built-in case folding handles ASCII. Up to 25 recent results
+   appear, with date, status and an ID suffix to distinguish similar applications.
+2. Choose `Screening`. Expect a private **Status updated — Screening** reply.
+3. Check the post: exactly one status tag, `Screening` in the starter embed, and
+   an **Applied → Screening** history message. Other tags and application fields remain.
+4. Choose `Interview`, then `Offer`, and check each history entry.
+5. Select the current status again: no duplicate history should appear.
+6. Archive a test post, then update its status. It should update and be archived
+   again afterward. A locked post requires Manage Threads; its lock is restored too.
+7. Your friend's route and denied cross-owner updates are covered with fictional
+   fixtures. A live friend check can wait until they join; these setup steps do
+   not invite or message them.
+
+After these checks, the intended MVP is complete. Use it before adding features.
+
+## Status failures and recovery
+
+Only fully linked applications in the owner's configured Forum are selectable.
+Pending status changes are hidden from autocomplete. Every update rechecks
+ownership; manually supplied application IDs cannot bypass it. Unexpected thread
+parents, guilds, tag definitions or tag counts stop the change before writes.
+
+A durable claim serializes each application. Completed interaction IDs never
+replay updates, even after newer changes. Busy and claim-losing requests also retain terminal attempts, so their later redelivery cannot change a newer status. Selecting an unchanged status makes no
+Discord writes. History suppresses mentions and supplies a nonce as an additional
+Discord guard; it does not rely on the nonce's short retention for durable deduplication.
+
+| Failure | Result |
+| --- | --- |
+| Database or initial validation | No Discord writes; private explanation. |
+| Forum/thread preflight | Attempt marked `failed`, claim released; fix setup and run `/status` again. |
+| Any mutation begins, then REST/network/commit fails | Attempt becomes `needs_check`; old D1 status and claim remain; private post link/reference. Do not repeat until checked. |
+| Worker ends unexpectedly | A `pending` attempt/claim can remain; check it before releasing. |
+| Final private reply fails | Completed change remains; safe HTTP/code/category diagnostics are logged. |
+
+For a retained claim, inspect the application and attempt in D1 using its reference
+and the owner's ID. Check the post's status tag, starter embed, history and
+archive/lock state. Do not release a claim while that invocation is still running.
+If changes are partial, manually make the three status displays agree with either
+`from_status` or `to_status`; verify history without blindly posting another entry.
+A known history message ID is saved on the attempt when available. A timeout can
+leave a message that was created but whose ID wasn't received.
+
+Once Discord is confirmed consistent, resolve that specific attempt in the
+Cloudflare D1 console. Replace placeholders only after checking both systems:
+
+```sql
+-- Inspect first; this query also enforces owner association.
+SELECT a.id, a.status, a.status_change_id, a.discord_thread_id,
+       c.from_status, c.to_status, c.state, c.failure_stage, c.history_message_id
+FROM applications a JOIN status_changes c ON c.id = a.status_change_id
+WHERE a.owner_discord_id = 'OWNER_ID' AND c.id = 'CHANGE_REFERENCE';
+
+-- FINAL_STATUS must be exactly the confirmed from_status or to_status.
+UPDATE applications SET status = 'FINAL_STATUS', status_change_id = NULL,
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+WHERE id = 'APPLICATION_ID' AND owner_discord_id = 'OWNER_ID'
+  AND status_change_id = 'CHANGE_REFERENCE'
+  AND EXISTS (SELECT 1 FROM status_changes c WHERE c.id = 'CHANGE_REFERENCE'
+      AND c.application_id = applications.id AND c.state IN ('pending','needs_check')
+      AND 'FINAL_STATUS' IN (c.from_status,c.to_status));
+
+-- RESOLUTION is complete if FINAL_STATUS is to_status, otherwise failed.
+UPDATE status_changes SET state = 'RESOLUTION',
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+WHERE id = 'CHANGE_REFERENCE' AND application_id = 'APPLICATION_ID'
+  AND state IN ('pending','needs_check')
+  AND EXISTS (SELECT 1 FROM applications a WHERE a.id = status_changes.application_id
+      AND a.owner_discord_id = 'OWNER_ID' AND a.status_change_id IS NULL
+      AND a.status = 'FINAL_STATUS');
+```
+
+Run these individually and check affected rows. The two manual updates are an
+operator procedure, not an automatic retry; do not execute another status command
+between them. Neither step deletes applications, posts, or history.
 
 ## Deploy and try `/apply` (M5)
 

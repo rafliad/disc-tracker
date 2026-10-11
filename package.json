@@ -10,6 +10,7 @@
     "cf-typegen": "wrangler types",
     "register:test": "node scripts/register-test-command.mjs",
     "register:apply": "node scripts/register-apply-command.mjs",
+    "register:status": "node scripts/register-status-command.mjs",
     "test:scripts": "node --test test/register-test-command.node.mjs"
   },
   "devDependencies": {
