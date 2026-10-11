@@ -3,6 +3,8 @@ import { applyModal, isDiscordId, isRecord, parseApplication } from './apply-for
 import { completeApplication } from './applications';
 import { autocompleteApplications, emptyAutocomplete, parseStatusOptions } from './status-form';
 import { completeStatus } from './status';
+import { parseEdit, parseEditOptions } from './edit-form';
+import { completeEdit, openEdit } from './edits';
 
 function privateReply(content: string): Response {
 	return Response.json({ type: 4, data: { content, flags: 64 } });
@@ -77,6 +79,24 @@ export default {
 			return Response.json({ type: 1 });
 		}
 		const data = 'data' in interaction ? interaction.data : null;
+		const isEditCommand = interaction.type === 2 && isRecord(data) && data.type === 1 && data.name === 'edit';
+		const isEditSubmit = interaction.type === 5 && isRecord(data) && typeof data.custom_id === 'string' && data.custom_id.startsWith('edit:');
+		if (isEditCommand || isEditSubmit) {
+			const user = resolveUserForum(interaction,env);
+			if (!user) return privateReply('You do not have access to this tracker in this server.');
+			if (!('application_id' in interaction) || interaction.application_id !== env.DISCORD_APPLICATION_ID ||
+				!('id' in interaction) || !isDiscordId(interaction.id)) return privateReply('Invalid edit request. Run /edit again.');
+			if (isEditCommand) {
+				const app = parseEditOptions(data);
+				return app ? openEdit(app,user,interaction.id,env) : privateReply('Invalid edit request. Select one of your saved applications.');
+			}
+			const parsed = parseEdit(data,user.ownerDiscordId);
+			if ('error' in parsed) return privateReply(parsed.error);
+			if (!('token' in interaction) || typeof interaction.token !== 'string' || !interaction.token || interaction.token.length > 512)
+				return privateReply('Invalid edit request. Run /edit again.');
+			ctx.waitUntil(completeEdit(parsed.value,user,interaction.token,env));
+			return Response.json({type:5,data:{flags:64}});
+		}
 		if (interaction.type === 2 && isRecord(data) && data.type === 1 && data.name === 'status') {
 			const user = resolveUserForum(interaction,env);
 			if (!user) return privateReply('You do not have access to this tracker in this server.');
@@ -88,11 +108,11 @@ export default {
 			ctx.waitUntil(completeStatus(input,user,interaction.id,interaction.token,env));
 			return Response.json({type:5,data:{flags:64}});
 		}
-		if (interaction.type === 4 && isRecord(data) && data.type === 1 && data.name === 'status') {
+		if (interaction.type === 4 && isRecord(data) && data.type === 1 && (data.name === 'status' || data.name === 'edit')) {
 			const user = resolveUserForum(interaction, env);
 			if (!user || !('application_id' in interaction) || interaction.application_id !== env.DISCORD_APPLICATION_ID ||
 				!('id' in interaction) || !isDiscordId(interaction.id)) return emptyAutocomplete();
-			return autocompleteApplications(data, user, env);
+			return autocompleteApplications(data, user, env, data.name);
 		}
 		const isApplyCommand = interaction.type === 2 && isRecord(data) && data.type === 1 && data.name === 'apply';
 		const isApplySubmit = interaction.type === 5 && isRecord(data) && typeof data.custom_id === 'string' && data.custom_id.startsWith('apply:');

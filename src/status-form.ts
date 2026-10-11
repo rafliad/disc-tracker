@@ -22,13 +22,14 @@ export function parseStatusOptions(data: unknown): StatusInput | null {
 	return isDiscordId(applicationId) && isStatus(status) ? { applicationId, status } : null;
 }
 
-export async function autocompleteApplications(data: unknown, user: UserForum, env: Env): Promise<Response> {
-	if (!isRecord(data) || !Array.isArray(data.options) || data.options.length > 2) return emptyAutocomplete();
+export async function autocompleteApplications(data: unknown, user: UserForum, env: Env, command: 'status' | 'edit' = 'status'): Promise<Response> {
+	const allowed = command === 'edit' ? ['application'] : ['application','status'];
+	if (!isRecord(data) || !Array.isArray(data.options) || data.options.length > allowed.length) return emptyAutocomplete();
 	const seen = new Set<string>();
 	let query: string | null = null;
 	for (const option of data.options) {
 		if (!isRecord(option) || option.type !== 3 || typeof option.name !== 'string' ||
-			!['application', 'status'].includes(option.name) || seen.has(option.name) || typeof option.value !== 'string') return emptyAutocomplete();
+			!allowed.includes(option.name) || seen.has(option.name) || typeof option.value !== 'string') return emptyAutocomplete();
 		seen.add(option.name);
 		if (option.focused === true) {
 			if (option.name !== 'application' || option.value.length > 100) return emptyAutocomplete();

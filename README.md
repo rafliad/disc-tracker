@@ -1,9 +1,10 @@
 # Discord Job Application Tracker
 
-A private Discord job application tracker for two users. The intended MVP uses
-`/apply`, `/status`, separate Discord Forum Channels, and Cloudflare D1.
+A private Discord job application tracker for two users. The working MVP uses
+`/apply`, `/status`, separate Discord Forum Channels, and Cloudflare D1. The first
+post-MVP upgrade adds `/edit` for correcting application details.
 
-## Current milestone: M6
+## Current upgrade: edit application details
 
 This change implements the Discord Interactions endpoint at the Worker's root URL:
 
@@ -23,14 +24,131 @@ This change implements the Discord Interactions endpoint at the Worker's root UR
 - `/status application:… status:…` suggests only that member's saved applications.
   It privately defers, updates the Forum tag and starter status, writes a history
   message, and commits the new D1 status. Duplicate and concurrent requests are guarded.
+- `/edit application:…` opens a prefilled, owner-bound modal. Saving updates the
+  same Forum post title/starter details and D1, preserving status, dates, tags,
+  history and thread identity. Blank URL/notes inputs clear those fields.
 - Signed malformed payloads and interaction types not implemented yet return 400.
 - A missing or malformed configured public key returns 500 for a signed request.
 - Other paths return 404; unsupported methods at `/` return 405.
 
 M3 endpoint registration and M4's live database/Forum `/test` reply have been
 confirmed by the project owner. M5 `/apply` also passed its live check after fixing
-the Worker redirect option and correcting the private Forum mapping. M6 adds
-`/status`; its live checks remain to be done after deployment.
+the Worker redirect option and correcting the private Forum mapping. M6 `/status`
+was merged and the owner confirmed the MVP works. `/edit` is implemented and
+tested here; its live check remains after this upgrade is merged and deployed.
+
+## Deploy and try `/edit`
+
+After merging this upgrade, run in your existing project folder:
+
+```powershell
+git switch master
+git pull --ff-only origin master
+npm ci
+npm test -- --run
+npm run test:scripts
+npx tsc --noEmit
+npx tsc --noEmit -p test/tsconfig.json
+npx wrangler d1 migrations apply disc-tracker-db --remote
+npm run deploy
+npm run register:edit -- YOUR_SERVER_ID
+```
+
+Apply migration `0003_application_edits.sql` **before** deploying the upgrade.
+It preserves existing applications and status attempts, adds a details revision,
+and records form snapshots/outcomes in `application_edits`. No new binding or
+secret is needed. Registration upserts only `/edit`; existing commands remain.
+The existing Forum permissions, including Manage Threads and Embed Links, apply.
+
+1. Use `/edit`, search your test company, and select its application. Expect a
+   modal prefilled with company, position, Job URL and notes.
+2. Correct the company/role and notes, then submit. Expect a private
+   **Application updated** reply linking to the same post. Its title and starter
+   details should change; status, Applied date, tags and history should remain.
+3. Edit again and leave URL/notes blank. Both should disappear from the display.
+4. Submit unchanged values. Expect **No changes to save**, with no post mutation.
+5. Open two edit forms; save one, then submit the other. The older form should
+   say the application changed. Run `/edit` again to load current details.
+6. Change status while an edit form is open, then submit the edit. The new status
+   should be preserved. Check `/apply` and `/status` still work normally.
+7. Edit an archived test post. It should update and return to its original
+   archived/locked state. The friend's live check can wait until they join.
+
+Opening or cancelling a modal never locks an application. Concurrent submissions
+and status changes share one durable claim. Old completed/rejected forms cannot
+execute again. A details revision rejects stale forms, including an old form
+after details change away and back; status-only changes do not make a form stale.
+Inputs have the same limits and URL validation as `/apply`.
+
+## Edit failures and recovery
+
+The legacy `applications.status_change_id` column now holds either a status
+attempt ID or an edit form ID. Both commands/autocomplete honor this same claim.
+Look in `status_changes` for a status attempt and `application_edits` for an edit;
+do not clear the slot merely because a status-only join returned no result.
+
+| Edit outcome | Result |
+| --- | --- |
+| Invalid/unowned form, missing application, database start failure | No Forum writes; private explanation. |
+| Busy/stale form or lost claim race | Form retains a terminal outcome; run `/edit` again after checking. |
+| Forum/thread preflight failure | Failed attempt; claim released. Fix setup and open a new form. |
+| A mutation starts, then rename/embed/restore/commit fails | Old D1 details and claim remain; attempt needs checking. Do not repeat blindly. |
+| Worker ends unexpectedly | A pending attempt/claim may remain; inspect before releasing it. |
+| Final private reply fails | A completed edit stays completed; sanitized diagnostics are logged. |
+
+The attempt stores `before_details`, `after_details` and the original thread
+name/archive/lock metadata before any Discord mutation. Do not resolve an attempt
+while its invocation is still running. Inspect both D1 and Discord first:
+
+```sql
+SELECT a.id, a.owner_discord_id, a.status, a.details_version, a.status_change_id,
+       a.discord_thread_id, e.base_version, e.before_details, e.after_details,
+       e.state, e.failure_stage, e.thread_metadata
+FROM applications a JOIN application_edits e ON e.id = a.status_change_id
+WHERE a.id = 'APPLICATION_ID' AND a.owner_discord_id = 'OWNER_ID'
+  AND e.id = 'EDIT_REFERENCE';
+```
+
+Manually align the post title and starter details with **either** the saved
+before or after snapshot, preserving the current status/date/tags/history.
+Restore the stored archive/lock state. For a rollback, use the stored original
+thread name; for a completed edit, use company/position bounded to 100 characters.
+After checking consistency, the following SQL resolves a completed edit. Replace
+the three placeholders and verify affected rows at each step. For a rollback,
+replace **every** `after_details` with `before_details` and the final state
+`'complete'` with `'failed'`. Run no `/edit` or `/status` between these steps.
+
+```sql
+UPDATE applications SET
+    company = json_extract((SELECT after_details FROM application_edits WHERE id = 'EDIT_REFERENCE'), '$.company'),
+    position = json_extract((SELECT after_details FROM application_edits WHERE id = 'EDIT_REFERENCE'), '$.position'),
+    job_url = json_extract((SELECT after_details FROM application_edits WHERE id = 'EDIT_REFERENCE'), '$.jobUrl'),
+    notes = json_extract((SELECT after_details FROM application_edits WHERE id = 'EDIT_REFERENCE'), '$.notes'),
+    details_version = details_version + 1, status_change_id = NULL,
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+WHERE id = 'APPLICATION_ID' AND owner_discord_id = 'OWNER_ID'
+  AND status_change_id = 'EDIT_REFERENCE'
+  AND EXISTS (SELECT 1 FROM application_edits e WHERE e.id = 'EDIT_REFERENCE'
+      AND e.application_id = applications.id AND e.base_version = applications.details_version
+      AND e.state IN ('pending','needs_check') AND e.after_details IS NOT NULL);
+
+UPDATE application_edits SET state = 'complete',
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+WHERE id = 'EDIT_REFERENCE' AND application_id = 'APPLICATION_ID'
+  AND state IN ('pending','needs_check')
+  AND EXISTS (SELECT 1 FROM applications a WHERE a.id = application_edits.application_id
+      AND a.owner_discord_id = 'OWNER_ID' AND a.status_change_id IS NULL
+      AND a.details_version = application_edits.base_version + 1
+      AND a.company IS json_extract(application_edits.after_details, '$.company')
+      AND a.position IS json_extract(application_edits.after_details, '$.position')
+      AND a.job_url IS json_extract(application_edits.after_details, '$.jobUrl')
+      AND a.notes IS json_extract(application_edits.after_details, '$.notes'));
+```
+
+Resolution advances the details revision even on a rollback, invalidating other
+open forms. This is a manual recovery procedure after checking Discord, not an
+automatic retry or cleanup. If any guarded statement changes zero rows, stop and
+inspect the current application/attempt rather than weakening the guards.
 
 ## Deploy and try `/status` (M6)
 
@@ -74,12 +192,13 @@ Links, Read Message History, and Manage Threads. Administrator is not required.
    fixtures. A live friend check can wait until they join; these setup steps do
    not invite or message them.
 
-After these checks, the intended MVP is complete. Use it before adding features.
+The MVP is complete and live-confirmed; these checks remain useful regression
+checks when deploying future changes.
 
 ## Status failures and recovery
 
 Only fully linked applications in the owner's configured Forum are selectable.
-Pending status changes are hidden from autocomplete. Every update rechecks
+Pending status changes and edits are hidden from autocomplete. Every update rechecks
 ownership; manually supplied application IDs cannot bypass it. Unexpected thread
 parents, guilds, tag definitions or tag counts stop the change before writes.
 
@@ -135,7 +254,8 @@ WHERE id = 'CHANGE_REFERENCE' AND application_id = 'APPLICATION_ID'
 
 Run these individually and check affected rows. The two manual updates are an
 operator procedure, not an automatic retry; do not execute another status command
-between them. Neither step deletes applications, posts, or history.
+between them. Do not execute an edit between them either. Neither step deletes
+applications, posts, or history. Use the edit-specific procedure above for edit IDs.
 
 ## Deploy and try `/apply` (M5)
 

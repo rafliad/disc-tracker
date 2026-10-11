@@ -1,5 +1,14 @@
 import type { ApplicationInput } from './apply-form';
 
+export function applicationTitle(input: Pick<ApplicationInput, 'company' | 'position'>) {
+	let title = '';
+	for (const character of `${input.company} — ${input.position}`) {
+		if (title.length + character.length > 100) break;
+		title += character;
+	}
+	return title;
+}
+
 export function applicationEmbed(input: ApplicationInput, appliedAt: string, status = 'Applied') {
 	return {
 		title: `${input.company} — ${input.position}`,
